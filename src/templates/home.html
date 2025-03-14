@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Logistics Dashboard</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f4f4f4;
+        }
+        h1 {
+            text-align: center;
+            color: #333;
+        }
+        .welcome {
+            text-align: center;
+            margin-bottom: 20px;
+            color: #555;
+        }
+        .nav-links {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .nav-links a {
+            margin: 0 15px;
+            text-decoration: none;
+            color: #007bff;
+            font-weight: bold;
+        }
+        .nav-links a:hover {
+            color: #0056b3; /* Fixed from malformed "color: #0056 color: #0056b3" */
+        }
+        h2 {
+            color: #444;
+            margin-top: 40px;
+        }
+        .container {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 20px;
+            justify-content: center;
+        }
+        .card {
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+            padding: 15px;
+            width: 250px;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        .card:hover {
+            transform: scale(1.05);
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.2);
+        }
+        .card h3 {
+            margin: 0 0 10px;
+            color: #007bff;
+        }
+        .card p {
+            margin: 5px 0;
+            color: #666;
+        }
+        .negative {
+            color: red;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <h1>Logistics Dashboard</h1>
+    <p class="welcome">Welcome, {{ session['user'] }}</p>
+    <div class="nav-links">
+        <a href="{{ url_for('add_inventory') }}">Add Inventory</a> |
+        <a href="{{ url_for('schedule_shipment') }}">Schedule Shipment</a> |
+        <a href="{{ url_for('reset') }}">Reset</a> |
+        <a href="{{ url_for('logout') }}">Logout</a>
+    </div>
+
+    <h2>Inventory</h2>
+    <div class="container">
+        {% for item_id, details in inventory.items() %}
+            <div class="card">
+                <h3>{{ item_id }}</h3>
+                <p>Name: {{ details.name }}</p>
+                <p {% if details.quantity < 0 %}class="negative"{% endif %}>
+                    Quantity: {{ details.quantity }}
+                </p>
+                <p>Location: {{ details.location }}</p>
+                <p>Last Updated: {{ details.last_updated }}</p>
+            </div>
+        {% endfor %}
+    </div>
+
+    <h2>Shipments</h2>
+    <div class="container">
+        {% for shipment_id, details in shipments.items() %}
+            <div class="card">
+                <h3>{{ shipment_id }}</h3>
+                <p>Item ID: {{ details.item_id }}</p>
+                <p>Quantity: {{ details.quantity }}</p>
+                <p>Destination: {{ details.destination }}</p>
+                <p>Status: {{ details.status }}</p>
+                <p>Scheduled: {{ details.scheduled_date }}</p>
+            </div>
+        {% endfor %}
+    </div>
+</body>
+</html>
