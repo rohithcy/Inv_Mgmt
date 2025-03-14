@@ -1,13 +1,14 @@
 from flask import Flask, request, render_template, redirect, url_for, session, flash
-from logistics import LogisticsSystem, DatabaseManager, CloudSync, auth, db  # Add db import
+from logistics import LogisticsSystem, DatabaseManager, CloudSync, auth, db
 import uuid
 import datetime
 import sqlite3
 import logging
 
 app = Flask(__name__)
-app.secret_key = "your-secret-key-here"  # Replace with a secure key
-logistics = LogisticsSystem(DatabaseManager("config/logistics.db"), CloudSync())
+app.secret_key = "your-secret-key-here"
+db_manager = DatabaseManager("config/logistics.db")
+cloud_sync = CloudSync()
 
 # User authentication functions
 def register_user(email: str, password: str) -> bool:
@@ -29,34 +30,28 @@ def login_user(email: str, password: str) -> bool:
         logging.error(f"Login failed: {str(e)}")
         return False
 
-# Reset database function
-def reset_database():
-    # Clear SQLite
+def reset_database(user_id: str):
     try:
         with sqlite3.connect("config/logistics.db") as conn:
-            conn.execute("DELETE FROM inventory")
-            conn.execute("DELETE FROM shipments")
+            conn.execute("DELETE FROM inventory WHERE user_id = ?", (user_id,))
+            conn.execute("DELETE FROM shipments WHERE user_id = ?", (user_id,))
             conn.commit()
-        logging.info("SQLite database cleared")
+        logging.info(f"SQLite database cleared for user {user_id}")
     except Exception as e:
-        logging.error(f"Failed to clear SQLite: {str(e)}")
+        logging.error(f"Failed to clear SQLite for user {user_id}: {str(e)}")
 
-    # Clear Firebase
     try:
-        ref = db.reference('inventory')
+        ref = db.reference(f'inventory/{user_id}')
         ref.delete()
-        logging.info("Firebase inventory cleared")
+        logging.info(f"Firebase inventory cleared for user {user_id}")
     except Exception as e:
-        logging.error(f"Failed to clear Firebase: {str(e)}")
-
-    # Clear in-memory data
-    logistics.inventory.clear()
-    logistics.shipments.clear()
+        logging.error(f"Failed to clear Firebase for user {user_id}: {str(e)}")
 
 @app.route('/')
 def home():
     if 'user' not in session:
         return redirect(url_for('login'))
+    logistics = LogisticsSystem(db_manager, cloud_sync, session['user'])
     return render_template('home.html', 
                          inventory=logistics.get_inventory_status(),
                          shipments=logistics.get_shipments())
@@ -92,6 +87,7 @@ def logout():
 def add_inventory():
     if 'user' not in session:
         return redirect(url_for('login'))
+    logistics = LogisticsSystem(db_manager, cloud_sync, session['user'])
     if request.method == 'POST':
         item_id = request.form['item_id']
         name = request.form['name']
@@ -105,6 +101,7 @@ def add_inventory():
 def schedule_shipment():
     if 'user' not in session:
         return redirect(url_for('login'))
+    logistics = LogisticsSystem(db_manager, cloud_sync, session['user'])
     if request.method == 'POST':
         shipment_id = f"SHIP-{uuid.uuid4().hex[:8]}"
         item_id = request.form['item_id']
@@ -120,7 +117,7 @@ def reset():
     if 'user' not in session:
         return redirect(url_for('login'))
     if request.method == 'POST':
-        reset_database()
+        reset_database(session['user'])
         flash("Inventory and shipments reset successfully.")
         return redirect(url_for('home'))
     return render_template('reset.html')

@@ -50,35 +50,39 @@ class DatabaseManager:
             cursor = conn.cursor()
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS inventory (
-                    item_id TEXT PRIMARY KEY,
+                    user_id TEXT,
+                    item_id TEXT,
                     name TEXT,
                     quantity INTEGER,
                     location TEXT,
-                    last_updated TIMESTAMP
+                    last_updated TIMESTAMP,
+                    PRIMARY KEY (user_id, item_id)
                 )
             ''')
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS shipments (
-                    shipment_id TEXT PRIMARY KEY,
+                    user_id TEXT,
+                    shipment_id TEXT,
                     item_id TEXT,
                     quantity INTEGER,
                     destination TEXT,
                     status TEXT,
                     scheduled_date TIMESTAMP,
-                    FOREIGN KEY (item_id) REFERENCES inventory (item_id)
+                    PRIMARY KEY (user_id, shipment_id),
+                    FOREIGN KEY (user_id, item_id) REFERENCES inventory (user_id, item_id)
                 )
             ''')
             conn.commit()
 
-    def update_inventory(self, item: InventoryItem):
+    def update_inventory(self, item: InventoryItem, user_id: str):
         with self.lock:
             with sqlite3.connect(self.db_name, detect_types=sqlite3.PARSE_DECLTYPES) as conn:
                 cursor = conn.cursor()
                 cursor.execute('''
                     INSERT OR REPLACE INTO inventory 
-                    (item_id, name, quantity, location, last_updated)
-                    VALUES (?, ?, ?, ?, ?)
-                ''', (item.item_id, item.name, item.quantity, item.location, 
+                    (user_id, item_id, name, quantity, location, last_updated)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                ''', (user_id, item.item_id, item.name, item.quantity, item.location, 
                       item.last_updated))
                 conn.commit()
 
@@ -86,7 +90,7 @@ class CloudSync:
     def __init__(self):
         self.ref = db.reference('inventory')
 
-    def sync_inventory(self, items: List[InventoryItem]) -> bool:
+    def sync_inventory(self, items: List[InventoryItem], user_id: str) -> bool:
         try:
             data = {item.item_id: {
                 "name": item.name,
@@ -94,17 +98,18 @@ class CloudSync:
                 "location": item.location,
                 "last_updated": item.last_updated.isoformat()
             } for item in items}
-            self.ref.update(data)
-            logging.info("Firebase sync successful")
+            self.ref.child(user_id).update(data)
+            logging.info(f"Firebase sync successful for user {user_id}")
             return True
         except Exception as e:
-            logging.error(f"Firebase sync failed: {str(e)}")
+            logging.error(f"Firebase sync failed for user {user_id}: {str(e)}")
             return False
 
 class LogisticsSystem:
-    def __init__(self, db_manager: DatabaseManager, cloud_sync: CloudSync):
+    def __init__(self, db_manager: DatabaseManager, cloud_sync: CloudSync, user_id: str):
         self.db_manager = db_manager
         self.cloud_sync = cloud_sync
+        self.user_id = user_id
         self.inventory: Dict[str, InventoryItem] = {}
         self.shipments: Dict[str, dict] = {}
         self._load_initial_data()
@@ -112,15 +117,15 @@ class LogisticsSystem:
     def _load_initial_data(self):
         with sqlite3.connect(self.db_manager.db_name, detect_types=sqlite3.PARSE_DECLTYPES) as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM inventory")
+            cursor.execute("SELECT * FROM inventory WHERE user_id = ?", (self.user_id,))
             for row in cursor.fetchall():
-                item = InventoryItem(row[0], row[1], row[2], row[3])
-                item.last_updated = row[4]
+                item = InventoryItem(row[1], row[2], row[3], row[4])
+                item.last_updated = row[5]
                 self.inventory[item.item_id] = item
 
-            cursor.execute("SELECT * FROM shipments WHERE status = 'PENDING'")
+            cursor.execute("SELECT * FROM shipments WHERE user_id = ? AND status = 'PENDING'", (self.user_id,))
             for row in cursor.fetchall():
-                shipment_id, item_id, quantity, destination, status, scheduled_date = row
+                shipment_id, item_id, quantity, destination, status, scheduled_date = row[1], row[2], row[3], row[4], row[5], row[6]
                 self.shipments[shipment_id] = {
                     "item_id": item_id,
                     "quantity": quantity,
@@ -131,15 +136,15 @@ class LogisticsSystem:
                 if item_id in self.inventory:
                     self.inventory[item_id].quantity -= quantity
                     self.inventory[item_id].last_updated = datetime.datetime.now()
-                    self.db_manager.update_inventory(self.inventory[item_id])
-                    self.cloud_sync.sync_inventory([self.inventory[item_id]])
+                    self.db_manager.update_inventory(self.inventory[item_id], self.user_id)
+                    self.cloud_sync.sync_inventory([self.inventory[item_id]], self.user_id)
 
     def add_inventory(self, item_id: str, name: str, quantity: int, location: str):
         item = InventoryItem(item_id, name, quantity, location)
         self.inventory[item_id] = item
-        self.db_manager.update_inventory(item)
-        self.cloud_sync.sync_inventory([item])
-        logging.info(f"Added item {item_id} to inventory")
+        self.db_manager.update_inventory(item, self.user_id)
+        self.cloud_sync.sync_inventory([item], self.user_id)
+        logging.info(f"Added item {item_id} to inventory for user {self.user_id}")
 
     def update_quantity(self, item_id: str, quantity_change: int):
         if item_id not in self.inventory:
@@ -152,9 +157,9 @@ class LogisticsSystem:
         if item.quantity < 0:
             raise ValueError("Quantity cannot be negative")
             
-        self.db_manager.update_inventory(item)
-        self.cloud_sync.sync_inventory([item])
-        logging.info(f"Updated quantity for item {item_id}")
+        self.db_manager.update_inventory(item, self.user_id)
+        self.cloud_sync.sync_inventory([item], self.user_id)
+        logging.info(f"Updated quantity for item {item_id} for user {self.user_id}")
 
     def schedule_shipment(self, shipment_id: str, item_id: str, 
                         quantity: int, destination: str, 
@@ -167,16 +172,16 @@ class LogisticsSystem:
             
         with sqlite3.connect(self.db_manager.db_name, detect_types=sqlite3.PARSE_DECLTYPES) as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT shipment_id FROM shipments WHERE shipment_id = ?", (shipment_id,))
+            cursor.execute("SELECT shipment_id FROM shipments WHERE user_id = ? AND shipment_id = ?", (self.user_id, shipment_id))
             if cursor.fetchone():
-                logging.info(f"Shipment {shipment_id} already exists, skipping")
+                logging.info(f"Shipment {shipment_id} already exists for user {self.user_id}, skipping")
                 return False
             
             cursor.execute('''
                 INSERT INTO shipments 
-                (shipment_id, item_id, quantity, destination, status, scheduled_date)
-                VALUES (?, ?, ?, ?, ?, ?)
-            ''', (shipment_id, item_id, quantity, destination, "PENDING", 
+                (user_id, shipment_id, item_id, quantity, destination, status, scheduled_date)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (self.user_id, shipment_id, item_id, quantity, destination, "PENDING", 
                   scheduled_date))
             conn.commit()
             
@@ -188,7 +193,7 @@ class LogisticsSystem:
             "status": "PENDING",
             "scheduled_date": scheduled_date
         }
-        logging.info(f"Scheduled shipment {shipment_id}")
+        logging.info(f"Scheduled shipment {shipment_id} for user {self.user_id}")
         return True
 
     def get_inventory_status(self) -> Dict[str, dict]:
@@ -208,6 +213,6 @@ class LogisticsSystem:
                 "quantity": info["quantity"],
                 "destination": info["destination"],
                 "status": info["status"],
-                "scheduled_date": info["scheduled_date"].isoformat()  # Convert datetime to string
+                "scheduled_date": info["scheduled_date"].isoformat()
             } for shipment_id, info in self.shipments.items()
         }
